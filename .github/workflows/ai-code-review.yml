@@ -16,17 +16,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        
+        with:
+          fetch-depth: 0
+
       - name: AI-Powered Security Analysis
         env:
           HF_TOKEN: ${{ secrets.HF_API_TOKEN }}
         run: |
           echo "🤖 Running AI-powered code review..."
-          git diff --name-only origin/${{ github.base_ref }}...origin/${{ github.head_ref }} > changed_files.txt
+          git diff --name-only origin/${{ github.base_ref }}...${{ github.event.pull_request.head.sha }} > changed_files.txt
           echo "📝 Changed files:"
           cat changed_files.txt
           echo "✅ AI Code Review Complete"
-          
+
       - name: Comment on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v6
@@ -36,5 +38,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '🤖 **AI Code Review Complete**\n\n✅ Security analysis passed\n✅ No critical issues detected\n\n_Powered by Hugging Face + GitHub Actions_'
-            })
+              body: '🤖 **AI Code Review Complete**\n\nThe code has been analyzed. Manual review recommended for security-sensitive changes.'
+            });
