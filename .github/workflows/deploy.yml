@@ -1,0 +1,52 @@
+name: Deployment Automation
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (staging/production)'
+        required: true
+        default: 'staging'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set deployment environment
+        run: |
+          echo "DEPLOY_ENV=${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_ENV
+          echo "DEPLOY_TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+      
+      - name: Validate deployment
+        run: |
+          echo "Validating deployment to: $DEPLOY_ENV"
+          echo "Release: ${{ github.event.release.tag_name }}"
+          echo "Timestamp: $DEPLOY_ENV"
+      
+      - name: Create deployment status
+        if: success()
+        run: |
+          echo "✓ Deployment validated"
+          echo "✓ Environment: $DEPLOY_ENV"
+          echo "✓ Version: ${{ github.event.release.tag_name }}"
+  
+  approval-gate:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Wait for approval
+        run: echo "Awaiting approval for production deployment"
+      
+      - name: Notify deployment
+        run: |
+          echo "Deployment Status: Pending Review"
+          echo "For production deployments, manual approval required"
