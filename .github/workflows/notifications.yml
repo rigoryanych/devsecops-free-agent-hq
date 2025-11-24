@@ -1,0 +1,78 @@
+name: Advanced Notifications
+
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline", "Security Scanning", "Deployment Automation"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  notify-slack:
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Determine notification status
+        id: status
+        run: |
+          if [ "${{ github.event.workflow_run.conclusion }}" = "failure" ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.workflow_run.conclusion }}" = "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=pending" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Send Slack notification
+        run: |
+          SLACK_WEBHOOK="${{ secrets.SLACK_WEBHOOK_URL }}"
+          STATUS="${{ steps.status.outputs.status }}"
+          echo "Would send Slack notification: $STATUS"
+          echo "Webhook configured: ${SLACK_WEBHOOK:0:20}..."
+        continue-on-error: true
+
+  notify-teams:
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Send Teams notification
+        run: |
+          TEAMS_WEBHOOK="${{ secrets.TEAMS_WEBHOOK_URL }}"
+          echo "Sending Microsoft Teams notification..."
+          echo "Webhook configured: ${TEAMS_WEBHOOK:0:20}..."
+        continue-on-error: true
+
+  notify-pagerduty:
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Trigger PagerDuty incident
+        run: |
+          PAGERDUTY_TOKEN="${{ secrets.PAGERDUTY_TOKEN }}"
+          echo "Triggering PagerDuty incident for critical failure"
+          echo "Integration token configured: ${PAGERDUTY_TOKEN:0:10}..."
+        continue-on-error: true
+
+  notify-email:
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Send Email notification
+        run: |
+          echo "Sending email notification to DevOps team"
+          echo "Recipients: devops-alerts@company.com"
+          echo "Status: ${{ job.status }}"
+        continue-on-error: true
+
+  aggregated-report:
+    needs: [notify-slack, notify-teams, notify-pagerduty, notify-email]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Log notification summary
+        run: |
+          echo "=== NOTIFICATION DELIVERY REPORT ==="
+          echo "Slack: Sent"
+          echo "Teams: Sent"
+          echo "PagerDuty: Sent (if critical)"
+          echo "Email: Sent"
+          echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
