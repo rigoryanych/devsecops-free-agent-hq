@@ -1,0 +1,36 @@
+CODEOWNERS# GitHub CODEOWNERS - Code Review Requirements
+# This file defines the code ownership and required reviewers for repository changes
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global default owners
+* @rigoryanych
+
+# Workflow and CI/CD Configuration
+.github/workflows/ @rigoryanych
+.github/  @rigoryanych
+
+# Security-related files
+SECURITY.md @rigoryanych
+CODEOWNERS @rigoryanych
+
+# Main source code
+src/ @rigoryanych
+tests/ @rigoryanych
+
+# Configuration files
+*.yaml @rigoryanych
+*.yml @rigoryanych
+Dockerfile* @rigoryanych
+
+# Documentation  
+*.md @rigoryanych
+README.md @rigoryanych
+CONTRIBUTING.md @rigoryanych
+DEVOPS_SETUP_GUIDE.md @rigoryanych
+
+# Package dependencies
+requirements*.txt @rigoryanych
+pyproject.toml @rigoryanych
+setup.py @rigoryanych
+package.json @rigoryanych
+package-lock.json @rigoryanych
