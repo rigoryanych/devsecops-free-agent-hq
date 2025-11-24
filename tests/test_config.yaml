@@ -1,0 +1,58 @@
+# DevSecOps Configuration Test - YAML Validation
+# This file validates workflow execution on YAML configuration changes
+
+apiVersion: v1
+kind: Configuration
+metadata:
+  name: devsecops-test-config
+  namespace: security
+  labels:
+    app: devsecops
+    tier: automation
+
+spec:
+  # Security Scanning Configuration
+  security:
+    enabled: true
+    scanners:
+      - name: trivy
+        type: vulnerability
+        enabled: true
+      - name: codeql
+        type: sast
+        enabled: true
+      - name: ai-review
+        type: ai-powered
+        enabled: true
+
+  # Code Quality Settings
+  quality:
+    minCoverage: 80
+    maxComplexity: 10
+    linting: enabled
+
+  # Branch Protection Rules
+  protection:
+    main:
+      requireReview: true
+      requireApprovalCount: 1
+      requireStatusChecks: true
+      allowForcePush: false
+
+  # Workflow Triggers
+  triggers:
+    - event: pull_request
+      actions: [review, scan, analyze]
+    - event: push
+      actions: [scan]
+    - event: schedule
+      cron: '0 0 * * 0'
+      actions: [full-audit]
+
+  # Notification Settings
+  notifications:
+    enabled: true
+    channels:
+      - email
+      - slack
+    severity: medium
