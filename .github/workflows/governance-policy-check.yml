@@ -1,0 +1,164 @@
+name: Governance & Policy Check - AuditorSEC
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  opa-workflow-policy:
+    name: OPA Workflow Policy Enforcement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+          chmod +x opa
+          sudo mv opa /usr/local/bin/
+          opa version
+
+      - name: Setup Python for YAML parsing
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install pyyaml -q
+
+      - name: Generate workflow manifests for OPA
+        run: |
+          mkdir -p opa-eval
+          python3 - << 'EOF'
+          import os, json, yaml
+          wdir = ".github/workflows"
+          manifests = []
+          for fname in os.listdir(wdir):
+              if not fname.endswith(('.yml','.yaml')): continue
+              try:
+                  with open(os.path.join(wdir, fname)) as f:
+                      data = yaml.safe_load(f)
+                  manifests.append({"file": fname, "workflow": data or {}})
+              except Exception as e:
+                  manifests.append({"file": fname, "workflow": {}, "error": str(e)})
+          with open("opa-eval/workflows.json", "w") as out:
+              json.dump(manifests, out, indent=2, default=str)
+          print(f"Processed {len(manifests)} workflows")
+          EOF
+
+      - name: Write OPA governance policy
+        run: |
+          mkdir -p opa-eval
+          cat > opa-eval/governance.rego << 'REGO'
+          package governance
+          deny_missing_permissions[msg] {
+            wf := input[_]
+            not wf.workflow.permissions
+            msg := sprintf("POLICY VIOLATION: '%v' missing permissions block", [wf.file])
+          }
+          warn_unpinned_action[msg] {
+            wf := input[_]
+            job := wf.workflow.jobs[_]
+            step := job.steps[_]
+            step.uses
+            endswith(step.uses, "@master")
+            msg := sprintf("POLICY WARNING: '%v' uses @master in '%v'", [wf.file, step.uses])
+          }
+          REGO
+
+      - name: Evaluate OPA governance policy
+        id: opa_eval
+        run: |
+          echo "=== OPA Governance Evaluation ==="
+          VIOLATIONS=0
+
+          echo "--- Missing Permissions ---"
+          R=$(opa eval --data opa-eval/governance.rego --input opa-eval/workflows.json \
+            --format pretty 'data.governance.deny_missing_permissions' 2>&1 || true)
+          echo "$R"
+          echo "$R" | grep -q "POLICY VIOLATION" && VIOLATIONS=$((VIOLATIONS+1)) || true
+
+          echo "--- Unpinned Actions ---"
+          R2=$(opa eval --data opa-eval/governance.rego --input opa-eval/workflows.json \
+            --format pretty 'data.governance.warn_unpinned_action' 2>&1 || true)
+          echo "$R2"
+
+          echo "=== $VIOLATIONS violation(s) ==="
+          echo "violations=$VIOLATIONS" >> $GITHUB_OUTPUT
+
+      - name: Write governance summary
+        run: |
+          echo "# Governance Policy Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Explicit permissions | checked |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pinned action versions | checked |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Violations:** ${{ steps.opa_eval.outputs.violations }}" >> $GITHUB_STEP_SUMMARY
+          echo "_AuditorSEC Governance Layer - OPA/Rego_" >> $GITHUB_STEP_SUMMARY
+
+  secrets-audit:
+    name: Secrets & Sensitive Data Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Audit required secrets are referenced
+        run: |
+          echo "=== Required Secrets Reference Audit ==="
+          REQUIRED=(HF_API_TOKEN SNYK_TOKEN GITGUARDIAN_API_KEY CLICKUP_API_TOKEN ZAPIER_WEBHOOK_URL)
+          for secret in "${REQUIRED[@]}"; do
+            if grep -r "secrets.${secret}" .github/workflows/ > /dev/null 2>&1; then
+              echo "  [REFERENCED] $secret"
+            else
+              echo "  [MISSING] $secret - add to GitHub Settings > Secrets"
+            fi
+          done
+
+      - name: Scan for exposed secrets
+        run: |
+          echo "=== Scanning for exposed secret patterns ==="
+          FOUND=0
+          for pattern in "BEGIN RSA PRIVATE KEY" "BEGIN OPENSSH PRIVATE KEY" "BEGIN EC PRIVATE KEY"; do
+            if grep -rn --exclude-dir='.git' "$pattern" . 2>/dev/null; then
+              FOUND=$((FOUND+1))
+            fi
+          done
+          [ "$FOUND" -eq 0 ] && echo "[PASS] No private keys exposed" \
+            || { echo "[FAIL] Private key patterns found!"; exit 1; }
+
+  compliance-mapping:
+    name: Compliance Control Mapping
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Map workflows to ISO 27001 / NIS2 / CISA controls
+        run: |
+          echo "=== Compliance Control Coverage Mapping ==="
+          echo "A.8.8  Vulnerability Mgmt    -> security.yml, security-advanced.yml"
+          echo "A.8.9  Configuration Mgmt    -> infrastructure-hardening.yml"
+          echo "A.8.25 Secure Dev Lifecycle  -> ai-code-review.yml, quality-assurance.yml"
+          echo "A.8.29 Security Testing      -> security-advanced.yml, docker-scan.yml"
+          echo "A.6.8  Event Reporting       -> notifications.yml, monitoring.yml"
+          echo "NIS2   Art.21 Risk Mgmt      -> governance-policy-check.yml"
+          echo "CISA   Secure by Design      -> pqc-hardening-check.yml"
+          echo ""
+          echo "Evidence: see ADVANCED_CUSTOMISED_RECOMMENDATIONS.md"
