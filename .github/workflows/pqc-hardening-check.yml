@@ -1,0 +1,151 @@
+name: PQC Hardening Check - FIPS-203/204 Compliance
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 4 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  pqc-readiness:
+    name: PQC Readiness Assessment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Scan for deprecated cryptographic algorithms
+        id: crypto_scan
+        run: |
+          CRITICAL_FINDINGS=0
+          HIGH_FINDINGS=0
+          REPORT_FILE="pqc-report.txt"
+          echo "# PQC Hardening Check Report - $(date -u)" > "$REPORT_FILE"
+
+          echo "=== Critical: NIST SP 800-131A forbidden algorithms ==="
+
+          for pattern in "\\bMD5\\b" "\\bSHA1\\b" "\\bDES\\b" "\\bRC4\\b" "RSA.{0,10}1024" "\.ECB\\b" "SSLv2" "SSLv3" "TLSv1\.0" "TLSv1\.1"; do
+            matches=$(grep -rn -E "$pattern" \
+              --include='*.py' --include='*.js' --include='*.ts' \
+              --include='*.c' --include='*.h' --include='*.go' \
+              --include='*.java' \
+              --exclude-dir='.git' --exclude-dir='node_modules' \
+              . 2>/dev/null || true)
+            if [ -n "$matches" ]; then
+              echo "[CRITICAL] Pattern: $pattern"
+              echo "$matches" | head -3
+              echo "### [CRITICAL] $pattern" >> "$REPORT_FILE"
+              echo "$matches" | head -5 >> "$REPORT_FILE"
+              CRITICAL_FINDINGS=$((CRITICAL_FINDINGS+1))
+            fi
+          done
+
+          echo "=== High: Pre-quantum algorithms needing PQC migration ==="
+
+          for pattern in "RSA.{0,10}2048" "P-256" "secp256r1" "Math\.random\(\)"; do
+            matches=$(grep -rn -E "$pattern" \
+              --include='*.py' --include='*.js' --include='*.ts' \
+              --include='*.c' --include='*.h' \
+              --exclude-dir='.git' --exclude-dir='node_modules' \
+              . 2>/dev/null || true)
+            if [ -n "$matches" ]; then
+              echo "[HIGH] Pattern: $pattern"
+              echo "$matches" | head -3
+              echo "### [HIGH] $pattern" >> "$REPORT_FILE"
+              echo "$matches" | head -5 >> "$REPORT_FILE"
+              HIGH_FINDINGS=$((HIGH_FINDINGS+1))
+            fi
+          done
+
+          echo "critical=$CRITICAL_FINDINGS" >> $GITHUB_OUTPUT
+          echo "high=$HIGH_FINDINGS" >> $GITHUB_OUTPUT
+          echo "=== Summary: $CRITICAL_FINDINGS critical, $HIGH_FINDINGS high ==="
+
+      - name: Scan for PQC adoption indicators
+        id: pqc_adoption
+        run: |
+          echo "=== PQC Adoption Scan (FIPS-203/204/205 indicators) ==="
+          PQC_SCORE=0
+          echo "" >> pqc-report.txt
+          echo "## PQC Adoption Indicators" >> pqc-report.txt
+
+          for pattern_label in \
+            "ML-KEM/FIPS-203:ML.KEM|KYBER|kyber" \
+            "ML-DSA/FIPS-204:ML.DSA|DILITHIUM|dilithium" \
+            "SLH-DSA/FIPS-205:SLH.DSA|SPHINCS|sphincs" \
+            "liboqs/OQS:liboqs|openquantumsafe" \
+            "BIKE-KEM:BIKE.KEM|bike_kem" \
+            "pqcrypto:pqcrypto"; do
+            label="${pattern_label%%:*}"
+            pattern="${pattern_label#*:}"
+            if grep -rq -E "$pattern" \
+              --include='*.py' --include='*.js' --include='*.ts' \
+              --include='*.c' --include='*.h' --include='*.rs' \
+              --include='*.md' \
+              --exclude-dir='.git' . 2>/dev/null; then
+              echo "[PQC-FOUND] $label"
+              echo "- FOUND: $label" >> pqc-report.txt
+              PQC_SCORE=$((PQC_SCORE+1))
+            else
+              echo "[PQC-MISSING] $label"
+              echo "- MISSING: $label" >> pqc-report.txt
+            fi
+          done
+
+          echo "pqc_score=$PQC_SCORE" >> $GITHUB_OUTPUT
+          echo "PQC Adoption Score: $PQC_SCORE/6"
+
+      - name: Generate PQC Summary and Roadmap
+        run: |
+          echo "" >> pqc-report.txt
+          echo "## Summary" >> pqc-report.txt
+          echo "Critical findings: ${{ steps.crypto_scan.outputs.critical }}" >> pqc-report.txt
+          echo "High findings: ${{ steps.crypto_scan.outputs.high }}" >> pqc-report.txt
+          echo "PQC adoption score: ${{ steps.pqc_adoption.outputs.pqc_score }}/6" >> pqc-report.txt
+          echo "" >> pqc-report.txt
+          echo "## PQC Migration Roadmap (Bakhmach Protocol / EDF-QSTN)" >> pqc-report.txt
+          echo "WP1: ML-KEM (FIPS-203) - key encapsulation for ESP32 firmware" >> pqc-report.txt
+          echo "WP2: ML-DSA (FIPS-204) - firmware signing and update verification" >> pqc-report.txt
+          echo "WP3: Causal AI false-alarm reduction (target <2% FPR)" >> pqc-report.txt
+          echo "WP4: Bakhmach Protocol field test and PQC audit report" >> pqc-report.txt
+          echo "Ref: ADVANCED_CUSTOMISED_RECOMMENDATIONS.md" >> pqc-report.txt
+
+          echo "# PQC Hardening Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Critical deprecated crypto | ${{ steps.crypto_scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| High deprecated crypto | ${{ steps.crypto_scan.outputs.high }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| PQC adoption score | ${{ steps.pqc_adoption.outputs.pqc_score }}/6 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_AuditorSEC PQC Hardening - FIPS-203/204 Bakhmach Protocol_" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload PQC report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pqc-hardening-report
+          path: pqc-report.txt
+          retention-days: 90
+
+      - name: Block merge on critical deprecated crypto
+        if: steps.crypto_scan.outputs.critical != '0'
+        run: |
+          echo "[FAIL] ${{ steps.crypto_scan.outputs.critical }} critical deprecated algorithm(s)!"
+          echo "Remediate before merging - see pqc-report.txt"
+          exit 1
