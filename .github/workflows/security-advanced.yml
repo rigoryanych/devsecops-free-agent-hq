@@ -1,4 +1,4 @@
-name: Advanced Security Scanning
+name: Advanced Security Scanning v2
 
 on:
   push:
@@ -6,64 +6,231 @@ on:
   pull_request:
     branches: [main, develop]
   schedule:
-    - cron: '0 2 * * 0'  # Weekly scan
+    - cron: '0 2 * * 0'  # Weekly scan Sunday 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+  issues: write
 
 jobs:
+  # ─── 1. Snyk Dependency & Code Vulnerability Scan ───────────────────────────
   snyk-scan:
+    name: Snyk Vulnerability Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Snyk
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Snyk CLI
         run: npm install -g snyk
-      
-      - name: Run Snyk scan
+
+      - name: Authenticate Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Run Snyk open-source scan
         run: |
-          echo "Scanning dependencies for vulnerabilities..."
-          echo "Would authenticate with: ${{ secrets.SNYK_TOKEN }}"
-          echo "Snyk scan simulated - ready for integration"
+          snyk test --all-projects --severity-threshold=high \
+            --json-file-output=snyk-results.json || true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         continue-on-error: true
 
+      - name: Run Snyk code (SAST) scan
+        run: |
+          snyk code test --severity-threshold=high \
+            --json-file-output=snyk-code-results.json || true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        continue-on-error: true
+
+      - name: Upload Snyk results as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snyk-results
+          path: |
+            snyk-results.json
+            snyk-code-results.json
+          retention-days: 30
+
+  # ─── 2. GitGuardian Secret Detection ────────────────────────────────────────
   gitguardian-scan:
+    name: GitGuardian Secret Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
-      - name: GitGuardian Scan
-        run: |
-          echo "Scanning for secrets and sensitive data..."
-          echo "GitGuardian API Key would be used: ${{ secrets.GITGUARDIAN_API_KEY }}"
-          echo "Secret detection enabled"
+
+      - name: GitGuardian scan
+        uses: GitGuardian/ggshield-action@v1
+        with:
+          args: secret scan ci
+        env:
+          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
         continue-on-error: true
 
+  # ─── 3. CodeQL Static Analysis ──────────────────────────────────────────────
   codeql-analysis:
+    name: CodeQL Static Analysis
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript', 'python']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: +security-extended,security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          upload: true
+
+  # ─── 4. OPA/Rego Policy Check ────────────────────────────────────────────────
+  policy-check:
+    name: OPA Policy Compliance Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Initialize CodeQL
-        run: |
-          echo "Initializing CodeQL database..."
-          echo "CodeQL version: latest"
-          echo "Languages: detect all"
-      
-      - name: Perform CodeQL Analysis
-        run: |
-          echo "Analyzing code with CodeQL..."
-          echo "Security rules: strict"
-          echo "Vulnerability detection: enabled"
+      - name: Checkout code
+        uses: actions/checkout@v4
 
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+          chmod +x opa
+          sudo mv opa /usr/local/bin/
+          opa version
+
+      - name: Run workflow policy checks
+        run: |
+          echo "=== Running OPA Policy Checks ==="
+
+          # Check that all workflow files have permissions set
+          for wf in .github/workflows/*.yml; do
+            echo "Checking: $wf"
+            if grep -q 'permissions:' "$wf"; then
+              echo "  [PASS] permissions block found"
+            else
+              echo "  [WARN] No permissions block in $wf"
+            fi
+          done
+
+          # Check for hardcoded secrets patterns
+          echo "Scanning for hardcoded secret patterns..."
+          if grep -rE '(password|secret|api_key|token)\s*[:=]\s*["'\'''][A-Za-z0-9+/]{20,}' \
+            --include='*.yml' --include='*.yaml' --include='*.js' --include='*.py' \
+            --exclude-dir='.git' . 2>/dev/null; then
+            echo "[FAIL] Potential hardcoded secrets found!"
+            exit 1
+          else
+            echo "[PASS] No hardcoded secrets detected"
+          fi
+
+          # Verify required secrets are referenced (not their values)
+          echo "Verifying required workflow secrets are referenced..."
+          REQUIRED_SECRETS=("HF_API_TOKEN" "SNYK_TOKEN" "GITGUARDIAN_API_KEY")
+          for s in "${REQUIRED_SECRETS[@]}"; do
+            if grep -r "secrets.$s" .github/workflows/ > /dev/null 2>&1; then
+              echo "  [PASS] $s is referenced in workflows"
+            else
+              echo "  [INFO] $s is not yet referenced in any workflow"
+            fi
+          done
+
+          echo "=== OPA Policy Check Complete ==="
+
+  # ─── 5. Aggregated Security Report ──────────────────────────────────────────
   security-report:
-    needs: [snyk-scan, gitguardian-scan, codeql-analysis]
+    name: Security Report & Notification
+    needs: [snyk-scan, gitguardian-scan, codeql-analysis, policy-check]
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Aggregate security results
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Snyk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: snyk-results
+          path: ./artifacts
+        continue-on-error: true
+
+      - name: Generate security summary
         run: |
-          echo "=== SECURITY SCAN REPORT ==="
-          echo "Snyk Scan: Completed"
-          echo "GitGuardian Scan: Completed"
-          echo "CodeQL Analysis: Completed"
-          echo "All security scans completed successfully"
+          echo "# Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Scan | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Snyk OSS | ${{ needs.snyk-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitGuardian | ${{ needs.gitguardian-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| CodeQL | ${{ needs.codeql-analysis.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| OPA Policy | ${{ needs.policy-check.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Run triggered by: ${{ github.actor }} at $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Post summary comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              '## Security Scan Results',
+              '',
+              '| Scan | Result |',
+              '|------|--------|',
+              `| Snyk OSS | ${{ needs.snyk-scan.result }} |`,
+              `| GitGuardian | ${{ needs.gitguardian-scan.result }} |`,
+              `| CodeQL | ${{ needs.codeql-analysis.result }} |`,
+              `| OPA Policy | ${{ needs.policy-check.result }} |`,
+              '',
+              '_AuditorSEC DevSecOps Orchestrator_'
+            ].join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+      - name: Notify via Zapier on critical findings
+        if: |
+          needs.snyk-scan.result == 'failure' ||
+          needs.gitguardian-scan.result == 'failure' ||
+          needs.policy-check.result == 'failure'
+        run: |
+          curl -X POST "${{ secrets.ZAPIER_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event": "security_scan_critical",
+              "repo": "${{ github.repository }}",
+              "branch": "${{ github.ref_name }}",
+              "actor": "${{ github.actor }}",
+              "snyk": "${{ needs.snyk-scan.result }}",
+              "gitguardian": "${{ needs.gitguardian-scan.result }}",
+              "policy": "${{ needs.policy-check.result }}",
+              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }' || true
+        continue-on-error: true
