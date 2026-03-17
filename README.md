@@ -94,3 +94,55 @@ Contributions welcome! Please read the contributing guidelines first.
 ---
 
 _Powered by GitHub Actions, Trivy, CodeQL, Hugging Face, and other free-tier tools_
+
+
+---
+
+## Advanced Customisation - AuditorSEC Edition v2.0
+
+### New Workflows (2026)
+
+| Workflow | Type | Description |
+|----------|------|-------------|
+| `security-advanced.yml` | Upgraded | Real Snyk OSS + SAST + GitGuardian (ggshield) + CodeQL matrix + OPA policy check + Zapier alert |
+| `ai-code-review.yml` | Upgraded | Real HF Inference API (Mistral-7B) + PQC/crypto deprecated pattern detection + PR comment |
+| `governance-policy-check.yml` | NEW | OPA/Rego policy enforcement + secrets audit + ISO 27001/NIS2/CISA compliance mapping |
+| `pqc-hardening-check.yml` | NEW | FIPS-203/204/205 deprecated crypto scan + PQC adoption scoring + Bakhmach Protocol roadmap |
+
+### Required Secrets
+
+```
+HF_API_TOKEN         # Hugging Face Inference API
+SNYK_TOKEN           # Snyk vulnerability scanning
+GITGUARDIAN_API_KEY  # GitGuardian secret detection
+CLICKUP_API_TOKEN    # ClickUp task automation
+ZAPIER_WEBHOOK_URL   # Critical alert notifications
+```
+
+Add via: **GitHub Settings → Secrets and variables → Actions**
+
+### PQC Hardening Roadmap (Bakhmach Protocol)
+
+| Work Package | Algorithm | Target Platform | FIPS Standard |
+|-------------|-----------|-----------------|---------------|
+| WP1 | ML-KEM (CRYSTALS-Kyber) | ESP32 firmware | FIPS-203 |
+| WP2 | ML-DSA (CRYSTALS-Dilithium) | Firmware signing | FIPS-204 |
+| WP3 | Causal AI false-alarm reduction | IoT sensors | N/A |
+| WP4 | Field test + audit report | Bakhmach deployment | All |
+
+### Governance Layer
+
+- **OPA/Rego** policy packs enforce: explicit permissions, pinned action versions, no hardcoded secrets
+- **Compliance mapping**: ISO 27001 A.8.x, NIS2 Art.21, CISA Secure by Design
+- **Secrets audit**: all 5 required secrets tracked per run
+- Policy violations block PR merges; all results posted as PR comments and GitHub Step Summary
+
+### Documentation
+
+- [Advanced Customised Recommendations](./ADVANCED_CUSTOMISED_RECOMMENDATIONS.md) - Full v2.0 strategy
+- [Implementation Roadmap](./IMPLEMENTATION_ROADMAP.md) - Enhancement task list
+- [Enhancements Complete](./ENHANCEMENTS_COMPLETE.md) - Completed items
+
+---
+
+*AuditorSEC DevSecOps Orchestrator — 2026-03-17 | Bakhmach, UA*
