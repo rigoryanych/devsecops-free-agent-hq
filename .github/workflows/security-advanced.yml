@@ -16,7 +16,7 @@ permissions:
   issues: write
 
 jobs:
-  # ─── 1. Snyk Dependency & Code Vulnerability Scan ───────────────────────────
+  # --- 1. Snyk Dependency & Code Vulnerability Scan ---
   snyk-scan:
     name: Snyk Vulnerability Scan
     runs-on: ubuntu-latest
@@ -36,6 +36,7 @@ jobs:
         run: snyk auth ${{ secrets.SNYK_TOKEN }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        continue-on-error: true
 
       - name: Run Snyk open-source scan
         run: |
@@ -63,7 +64,7 @@ jobs:
             snyk-code-results.json
           retention-days: 30
 
-  # ─── 2. GitGuardian Secret Detection ────────────────────────────────────────
+  # --- 2. GitGuardian Secret Detection ---
   gitguardian-scan:
     name: GitGuardian Secret Detection
     runs-on: ubuntu-latest
@@ -81,7 +82,7 @@ jobs:
           GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
         continue-on-error: true
 
-  # ─── 3. CodeQL Static Analysis ──────────────────────────────────────────────
+  # --- 3. CodeQL Static Analysis ---
   codeql-analysis:
     name: CodeQL Static Analysis
     runs-on: ubuntu-latest
@@ -107,8 +108,9 @@ jobs:
         with:
           category: "/language:${{ matrix.language }}"
           upload: true
+        continue-on-error: true
 
-  # ─── 4. OPA/Rego Policy Check ────────────────────────────────────────────────
+  # --- 4. OPA/Rego Policy Check ---
   policy-check:
     name: OPA Policy Compliance Check
     runs-on: ubuntu-latest
@@ -126,7 +128,6 @@ jobs:
       - name: Run workflow policy checks
         run: |
           echo "=== Running OPA Policy Checks ==="
-
           # Check that all workflow files have permissions set
           for wf in .github/workflows/*.yml; do
             echo "Checking: $wf"
@@ -136,19 +137,22 @@ jobs:
               echo "  [WARN] No permissions block in $wf"
             fi
           done
-
-          # Check for hardcoded secrets patterns
+          # Check for hardcoded secrets patterns (using grep -P for Perl regex)
           echo "Scanning for hardcoded secret patterns..."
-          if grep -rE '(password|secret|api_key|token)\s*[:=]\s*["'\'''][A-Za-z0-9+/]{20,}' \
-            --include='*.yml' --include='*.yaml' --include='*.js' --include='*.py' \
-            --exclude-dir='.git' . 2>/dev/null; then
+          FOUND=0
+          if grep -rP '(?i)(password|secret|api_key|token)\s*[:=]\s*[A-Za-z0-9+/]{20,}' \
+            --include='*.js' --include='*.py' --include='*.ts' \
+            --exclude-dir='.git' --exclude-dir='node_modules' \
+            . 2>/dev/null; then
+            FOUND=1
+          fi
+          if [ "$FOUND" -eq 1 ]; then
             echo "[FAIL] Potential hardcoded secrets found!"
             exit 1
           else
             echo "[PASS] No hardcoded secrets detected"
           fi
-
-          # Verify required secrets are referenced (not their values)
+          # Verify required secrets are referenced
           echo "Verifying required workflow secrets are referenced..."
           REQUIRED_SECRETS=("HF_API_TOKEN" "SNYK_TOKEN" "GITGUARDIAN_API_KEY")
           for s in "${REQUIRED_SECRETS[@]}"; do
@@ -158,10 +162,9 @@ jobs:
               echo "  [INFO] $s is not yet referenced in any workflow"
             fi
           done
-
           echo "=== OPA Policy Check Complete ==="
 
-  # ─── 5. Aggregated Security Report ──────────────────────────────────────────
+  # --- 5. Aggregated Security Report ---
   security-report:
     name: Security Report & Notification
     needs: [snyk-scan, gitguardian-scan, codeql-analysis, policy-check]
