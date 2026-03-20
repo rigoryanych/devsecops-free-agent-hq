@@ -34,116 +34,22 @@ jobs:
         run: |
           git diff --name-only origin/${{ github.base_ref }}...${{ github.event.pull_request.head.sha }} \
             > changed_files.txt 2>/dev/null || echo "No diff available" > changed_files.txt
-          echo "files=$(cat changed_files.txt | tr '\n' ',' | sed 's/,$//')"
           echo "count=$(wc -l < changed_files.txt)" >> $GITHUB_OUTPUT
 
       - name: Run AI-Powered Code Review via Hugging Face API
         id: ai_review
         env:
           HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
-        run: |
-          python3 << 'PYEOF'
-          import os, requests, json, sys
+        run: python3 scripts/ai_review.py
 
-          hf_token = os.environ.get("HF_API_TOKEN", "")
-          headers = {"Authorization": f"Bearer {hf_token}"}
-
-          # Read changed files
-          try:
-              with open("changed_files.txt") as f:
-                  changed = [l.strip() for l in f if l.strip() and not l.startswith("No diff")]
-          except Exception:
-              changed = []
-
-          # Collect code snippets from changed files (first 500 chars each)
-          snippets = []
-          for fname in changed[:5]:  # limit to 5 files
-              try:
-                  with open(fname, "r", errors="ignore") as cf:
-                      content = cf.read(500)
-                  snippets.append(f"File: {fname}\n{content}")
-              except Exception:
-                  pass
-
-          code_context = "\n\n---\n\n".join(snippets) if snippets else "No code changes to review."
-
-          prompt = f"""You are an expert DevSecOps security auditor for AuditorSEC. \
-Analyse the following code changes for: \
-1. Security vulnerabilities (OWASP Top 10, injection, auth issues) \
-2. Cryptographic weaknesses (use of deprecated algorithms like MD5, SHA1, RSA<2048, DES, RC4) \
-3. PQC readiness gaps (absence of ML-KEM/ML-DSA where applicable, reliance on non-PQC TLS) \
-4. Secrets/credentials exposure \
-5. Input validation issues \
-Provide a concise structured report with: [CRITICAL], [HIGH], [MEDIUM], [LOW], [INFO] findings. \
-If no issues found, say PASS.
-
-Code changes:\n{code_context[:1200]}"""
-
-          # Use HF Inference API with a code/security model
-          api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-          payload = {
-              "inputs": prompt,
-              "parameters": {
-                  "max_new_tokens": 512,
-                  "temperature": 0.2,
-                  "return_full_text": False
-              }
-          }
-
-          try:
-              if hf_token:
-                  resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
-                  if resp.status_code == 200:
-                      result = resp.json()
-                      review_text = result[0].get("generated_text", "No output") if isinstance(result, list) else str(result)
-                  else:
-                      review_text = f"HF API returned status {resp.status_code}: {resp.text[:200]}"
-              else:
-                  review_text = "[WARN] HF_API_TOKEN not set - AI review skipped. Add HF_API_TOKEN secret to enable."
-          except Exception as e:
-              review_text = f"[ERROR] AI review failed: {str(e)}"
-
-          # Write review to file for next step
-          with open("ai_review_result.txt", "w") as out:
-              out.write(review_text)
-
-          print("=== AI Review Output ===")
-          print(review_text[:1000])
-          PYEOF
-
-      # ─── 2. PQC & Crypto Pattern Detection ─────────────────────────────────
+      # ─── 2. PQC & Crypto Pattern Detection ───────────────────────────────────
       - name: PQC and Crypto Pattern Detection
         id: pqc_check
         run: |
           echo "=== PQC & Deprecated Crypto Pattern Scan ==="
           FINDINGS=""
-          EXIT_CODE=0
-
-          DEPRECATED_PATTERNS=(
-            "MD5"
-            "SHA1"
-            "DES\b"
-            "RC4"
-            "RSA.*1024"
-            "ssl\.SSLv"
-            "createCipher"
-            "Math\.random"
-            "ECB"
-          )
-
-          PQC_POSITIVE_PATTERNS=(
-            "ML-KEM"
-            "ML-DSA"
-            "KYBER"
-            "DILITHIUM"
-            "BIKE"
-            "FIPS-203"
-            "FIPS-204"
-            "liboqs"
-            "pqcrypto"
-          )
-
-          # Scan changed files for deprecated crypto
+          DEPRECATED_PATTERNS=("MD5" "SHA1" "DES\b" "RC4" "RSA.*1024" "ssl\.SSLv" "createCipher" "Math\.random" "ECB")
+          PQC_POSITIVE_PATTERNS=("ML-KEM" "ML-DSA" "KYBER" "DILITHIUM" "BIKE" "FIPS-203" "FIPS-204" "liboqs" "pqcrypto")
           if [ -f changed_files.txt ]; then
             while IFS= read -r file; do
               if [ -f "$file" ]; then
@@ -152,34 +58,28 @@ Code changes:\n{code_context[:1200]}"""
                   if [ -n "$matches" ]; then
                     echo "[CRYPTO-WARN] $file: Pattern '$pattern' found:"
                     echo "$matches" | head -3
-                    FINDINGS="$FINDINGS\n[HIGH] Deprecated crypto pattern '$pattern' in $file"
+                    FINDINGS="$FINDINGS\n[HIGH] Deprecated crypto '$pattern' in $file"
                   fi
                 done
               fi
             done < changed_files.txt
           fi
-
-          # Check for PQC usage
           PQC_FOUND=0
           for pattern in "${PQC_POSITIVE_PATTERNS[@]}"; do
-            if grep -rq "$pattern" --include='*.py' --include='*.js' --include='*.ts' \
-               --include='*.c' --include='*.h' . 2>/dev/null; then
+            if grep -rq "$pattern" --include='*.py' --include='*.js' --include='*.ts' . 2>/dev/null; then
               PQC_FOUND=1
-              echo "[PQC-INFO] PQC pattern '$pattern' detected in codebase"
+              echo "[PQC-INFO] PQC pattern '$pattern' detected"
             fi
           done
-
           if [ "$PQC_FOUND" -eq 0 ]; then
-            echo "[PQC-INFO] No PQC patterns detected yet - see ADVANCED_CUSTOMISED_RECOMMENDATIONS.md for roadmap"
+            echo "[PQC-INFO] No PQC patterns detected yet"
           fi
-
           if [ -n "$FINDINGS" ]; then
             echo -e "$FINDINGS" >> ai_review_result.txt
           fi
-
           echo "=== Crypto Scan Complete ==="
 
-      # ─── 3. Post Review Comment on PR ─────────────────────────────────────
+      # ─── 3. Post Review Comment on PR ───────────────────────────────────────
       - name: Post AI Review Comment on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -187,31 +87,14 @@ Code changes:\n{code_context[:1200]}"""
           script: |
             const fs = require('fs');
             let reviewText = 'AI review output not available.';
-            try {
-              reviewText = fs.readFileSync('ai_review_result.txt', 'utf8').slice(0, 3000);
-            } catch(e) {}
-
-            const changedFiles = (() => {
-              try { return fs.readFileSync('changed_files.txt', 'utf8').trim(); } catch(e) { return 'N/A'; }
-            })();
-
+            try { reviewText = fs.readFileSync('ai_review_result.txt', 'utf8').slice(0, 3000); } catch(e) {}
+            const changedFiles = (() => { try { return fs.readFileSync('changed_files.txt', 'utf8').trim(); } catch(e) { return 'N/A'; } })();
             const body = [
-              '## AI Code Review v2 - AuditorSEC DevSecOps',
-              '',
-              '### Changed Files',
-              '```',
-              changedFiles.slice(0, 500),
-              '```',
-              '',
-              '### AI Security Analysis (Hugging Face)',
-              '```',
-              reviewText,
-              '```',
-              '',
-              '> Powered by Mistral-7B-Instruct via HF Inference API + PQC/Crypto pattern detector',
-              '> See [ADVANCED_CUSTOMISED_RECOMMENDATIONS.md](../blob/main/ADVANCED_CUSTOMISED_RECOMMENDATIONS.md) for PQC roadmap.'
+              '## AI Code Review v2 - AuditorSEC DevSecOps', '',
+              '### Changed Files', '```', changedFiles.slice(0, 500), '```', '',
+              '### AI Security Analysis (Hugging Face)', '```', reviewText, '```', '',
+              '> Powered by Mistral-7B-Instruct via HF Inference API + PQC/Crypto pattern detector'
             ].join('\n');
-
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
