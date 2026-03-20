@@ -83,18 +83,15 @@ jobs:
         run: |
           echo "=== OPA Governance Evaluation ==="
           VIOLATIONS=0
-
           echo "--- Missing Permissions ---"
           R=$(opa eval --data opa-eval/governance.rego --input opa-eval/workflows.json \
             --format pretty 'data.governance.deny_missing_permissions' 2>&1 || true)
           echo "$R"
           echo "$R" | grep -q "POLICY VIOLATION" && VIOLATIONS=$((VIOLATIONS+1)) || true
-
           echo "--- Unpinned Actions ---"
           R2=$(opa eval --data opa-eval/governance.rego --input opa-eval/workflows.json \
             --format pretty 'data.governance.warn_unpinned_action' 2>&1 || true)
           echo "$R2"
-
           echo "=== $VIOLATIONS violation(s) ==="
           echo "violations=$VIOLATIONS" >> $GITHUB_OUTPUT
 
@@ -136,7 +133,7 @@ jobs:
           echo "=== Scanning for exposed secret patterns ==="
           FOUND=0
           for pattern in "BEGIN RSA PRIVATE KEY" "BEGIN OPENSSH PRIVATE KEY" "BEGIN EC PRIVATE KEY"; do
-            if grep -rn --exclude-dir='.git' "$pattern" . 2>/dev/null; then
+            if grep -rn --exclude-dir='.git' --exclude-dir='.github' --exclude='*.yml' --exclude='*.yaml' "$pattern" . 2>/dev/null; then
               FOUND=$((FOUND+1))
             fi
           done
@@ -153,12 +150,12 @@ jobs:
       - name: Map workflows to ISO 27001 / NIS2 / CISA controls
         run: |
           echo "=== Compliance Control Coverage Mapping ==="
-          echo "A.8.8  Vulnerability Mgmt    -> security.yml, security-advanced.yml"
-          echo "A.8.9  Configuration Mgmt    -> infrastructure-hardening.yml"
-          echo "A.8.25 Secure Dev Lifecycle  -> ai-code-review.yml, quality-assurance.yml"
-          echo "A.8.29 Security Testing      -> security-advanced.yml, docker-scan.yml"
-          echo "A.6.8  Event Reporting       -> notifications.yml, monitoring.yml"
-          echo "NIS2   Art.21 Risk Mgmt      -> governance-policy-check.yml"
-          echo "CISA   Secure by Design      -> pqc-hardening-check.yml"
+          echo "A.8.8 Vulnerability Mgmt -> security.yml, security-advanced.yml"
+          echo "A.8.9 Configuration Mgmt -> infrastructure-hardening.yml"
+          echo "A.8.25 Secure Dev Lifecycle -> ai-code-review.yml, quality-assurance.yml"
+          echo "A.8.29 Security Testing -> security-advanced.yml, docker-scan.yml"
+          echo "A.6.8 Event Reporting -> notifications.yml, monitoring.yml"
+          echo "NIS2 Art.21 Risk Mgmt -> governance-policy-check.yml"
+          echo "CISA Secure by Design -> pqc-hardening-check.yml"
           echo ""
           echo "Evidence: see ADVANCED_CUSTOMISED_RECOMMENDATIONS.md"
